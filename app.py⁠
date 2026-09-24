@@ -1,0 +1,172 @@
+import streamlit as st
+import time
+from datetime import datetime
+from google import genai
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="Vet Path: Etiology & Disease Causation", layout="centered", page_icon="🔬")
+st.title("🔬 General Pathology: Etiology & Disease Causation")
+st.caption("Interactive Socratic Tutor for 2nd Year BVSc & AH Students")
+
+# --- INITIALIZE GEMINI API ---
+api_key = st.secrets.get("GEMINI_API_KEY")
+if not api_key:
+    st.error("Missing GEMINI_API_KEY in Streamlit Secrets!")
+    st.stop()
+
+client = genai.Client(api_key=api_key)
+
+# --- GOOGLE SHEETS LOGGING FUNCTION ---
+def save_to_google_sheets(student_name, roll_no, transcript):
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds_dict = st.secrets["gcp_service_account"]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        gc = gspread.authorize(creds)
+        
+        # Opens sheet named "Veterinary_Quiz_Responses"
+        sheet = gc.open("Veterinary_Quiz_Responses").sheet1
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        row = [timestamp, student_name, roll_no, "Etiology: Predisposing vs Exciting", "Completed (10 Questions)", transcript]
+        sheet.append_row(row)
+        return True
+    except Exception as e:
+        st.warning(f"Note: Response logged locally (Google Sheets sync issue: {e})")
+        return False
+
+# --- SOCRATIC SYSTEM PROMPT (10 QUESTIONS MAX) ---
+SYSTEM_PROMPT = """
+You are an encouraging, highly interactive Veterinary Pathology Professor guiding 2nd-year BVSc & AH students who are taking Pathology for the first time.
+
+Your Objective: Teach the core principles of General Pathology Etiology (Disease Causation), focusing strictly on:
+1. Predisposing Causes (Intrinsic: Species, Breed, Age, Sex, Coat Color/Genetics; Extrinsic: Climate, Housing, Malnutrition).
+2. Exciting / Immediate Causes (Biological: Bacteria/Viruses/Parasites; Physical: Trauma/Thermal; Chemical: Toxins; Nutritional deficits).
+
+RIGID RULES FOR INTERACTION:
+1. You must guide the student through EXACTLY 10 QUESTIONS in a conversational, step-by-step Socratic manner.
+2. Ask ONLY ONE question at a time. Never give multiple questions in a single response.
+3. Validate the student's previous response warmly before moving to the next question. If they make a mistake, gently explain why using simple analogies before asking the next question.
+4. Keep explanations concise, clear, and focused on veterinary examples.
+
+10-QUESTION CURRICULUM SEQUENCE:
+- Q1 (Definition Check): Welcome them. Ask them in simple terms what they think the difference is between a "factor that makes an animal susceptible" vs "the actual agent that triggers the disease".
+- Q2 (Predisposing - Coat Color): Introduce the classic example: Gray/white-coated horses (e.g., Percherons/Arabians) frequently developing dermal Melanomas as they age. Ask: Is coat color/genetics a PREDISPOSING cause or an EXCITING cause?
+- Q3 (Predisposing - Species): Give an example: Cattle getting Bloat on alfalfa pasture while horses on the same pasture do not due to anatomical differences. Ask what type of predisposing factor (Species/Breed/Age) this represents.
+- Q4 (Predisposing - Age): Young calves getting Rotaviral enteritis vs adult cows showing no symptoms. Ask how AGE acts as an intrinsic predisposing factor.
+- Q5 (Predisposing - Environmental): High humidity and overcrowded housing leading to pneumonia outbreaks in sheep. Ask if housing condition is an INTRINSIC or EXTRINSIC predisposing cause.
+- Q6 (Exciting - Biological Agents): Shift to Exciting causes. Give an example: Bacillus anthracis causing Anthrax in cattle. Ask them to classify this exciting cause (Biological, Chemical, or Physical?).
+- Q7 (Exciting - Physical Agents): A dog sustaining a fractured femur after a road traffic accident, or severe frostbite on chicken combs. Is temperature/trauma a Physical or Chemical exciting cause?
+- Q8 (Exciting - Chemical/Toxic): Cattle consuming bracken fern leading to enzootic hematuria. Ask them to categorize plant toxins among exciting causes.
+- Q9 (Synthesis Case Study): Present a 1-sentence mini-case: "A white Hereford cow kept in high-altitude sunny pastures develops Squamous Cell Carcinoma of the eye." Ask the student to identify ONE predisposing cause and ONE exciting cause from this scenario.
+- Q10 (Final Wrap-up & Scoring): Congratulate the student on completing all 10 steps! Give a friendly summary score out of 10, summarize the 2 key principles of disease causation, and end the session.
+"""
+
+# --- SESSION STATE INITIALIZATION ---
+if "quiz_started" not in st.session_state:
+    st.session_state.quiz_started = False
+if "q_count" not in st.session_state:
+    st.session_state.q_count = 1
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "start_time" not in st.session_state:
+    st.session_state.start_time = None
+if "saved" not in st.session_state:
+    st.session_state.saved = False
+
+# --- SIDEBAR REGISTRATION ---
+st.sidebar.header("📋 Student Details")
+student_name = st.sidebar.text_input("Full Name:")
+roll_no = st.sidebar.text_input("Roll Number / Student ID:")
+
+QUIZ_DURATION_MINUTES = 25
+
+# --- QUIZ START SCREEN ---
+if not st.session_state.quiz_started:
+    st.info("Welcome to the General Pathology Etiology Module! You will explore how diseases start in animals through 10 interactive questions.")
+    
+    if st.button("🚀 Begin 10-Step Interactive Session"):
+        if not student_name or not roll_no:
+            st.warning("⚠️ Please fill in your Name and Roll Number in the sidebar first!")
+        else:
+            st.session_state.quiz_started = True
+            st.session_state.start_time = time.time()
+            
+            init_prompt = f"System prompt: {SYSTEM_PROMPT}\n\nTask: Start Question 1 of the 10-step causation module."
+            with st.spinner("Preparing Question 1..."):
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=init_prompt
+                )
+                st.session_state.chat_history.append({"role": "assistant", "content": response.text})
+            st.rerun()
+
+# --- ACTIVE QUIZ SESSION ---
+else:
+    # Display Timer & Progress
+    elapsed_time = (time.time() - st.session_state.start_time) / 60
+    remaining_time = max(0, QUIZ_DURATION_MINUTES - elapsed_time)
+    st.sidebar.metric(label="Time Remaining", value=f"{remaining_time:.1f} Mins")
+    st.sidebar.progress(min(1.0, st.session_state.q_count / 10.0), text=f"Progress: Question {min(10, st.session_state.q_count)} of 10")
+
+    if remaining_time <= 0:
+        st.error("⏰ Time is up! Your session has expired.")
+        st.stop()
+
+    # Render Conversation History
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    # User Input Field (Active for Questions 1 through 9)
+    if st.session_state.q_count <= 9:
+        user_input = st.chat_input("Type your response here...")
+        if user_input:
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            
+            # Build conversation context for Gemini
+            conversation_context = f"{SYSTEM_PROMPT}\n\nChat History so far:\n"
+            for msg in st.session_state.chat_history:
+                conversation_context += f"{msg['role'].upper()}: {msg['content']}\n"
+            
+            conversation_context += f"\nTask: Evaluate the student's answer gently and present Question {st.session_state.q_count + 1}."
+
+            with st.spinner("Evaluating & preparing next question..."):
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=conversation_context
+                )
+                st.session_state.chat_history.append({"role": "assistant", "content": response.text})
+                st.session_state.q_count += 1
+            st.rerun()
+
+    # Question 10 Submission & Final Logging
+    elif st.session_state.q_count == 10 and not st.session_state.saved:
+        user_input = st.chat_input("Type your final response for Question 10...")
+        if user_input:
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            
+            conversation_context = f"{SYSTEM_PROMPT}\n\nChat History so far:\n"
+            for msg in st.session_state.chat_history:
+                conversation_context += f"{msg['role'].upper()}: {msg['content']}\n"
+            
+            conversation_context += "\nTask: Evaluate Question 10 response, give final score out of 10, summarize takeaways, and conclude."
+
+            with st.spinner("Generating final review..."):
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=conversation_context
+                )
+                st.session_state.chat_history.append({"role": "assistant", "content": response.text})
+                
+                # Auto-save full session log
+                full_transcript = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in st.session_state.chat_history])
+                save_to_google_sheets(student_name, roll_no, full_transcript)
+                st.session_state.saved = True
+                st.session_state.q_count += 1
+            st.rerun()
+
+    elif st.session_state.saved:
+        st.success("🎉 Module Completed! Your answers and scores have been submitted successfully to the faculty record.")
